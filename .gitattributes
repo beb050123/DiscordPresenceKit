@@ -1,0 +1,7 @@
+DiscordSDK/lib/**/*.aar filter=lfs diff=lfs merge=lfs -text
+DiscordSDK/lib/**/*.lib filter=lfs diff=lfs merge=lfs -text
+DiscordSDK/lib/**/*.dbg filter=lfs diff=lfs merge=lfs -text
+DiscordSDK/bin/** filter=lfs diff=lfs merge=lfs -text
+DiscordSDK/lib/**/*.dylib filter=lfs diff=lfs merge=lfs -text
+DiscordSDK/lib/**/*.so filter=lfs diff=lfs merge=lfs -text
+DiscordSDK/lib/**/*.dll filter=lfs diff=lfs merge=lfs -text

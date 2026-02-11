@@ -26,6 +26,3 @@ DerivedData/
 .swiftpm/
 .build/
 Package.resolved
-
-# Discord SDK - users must download separately
-DiscordSDK/

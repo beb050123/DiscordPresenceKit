@@ -2,6 +2,12 @@
 
 A Swift-first Discord Rich Presence library for macOS.
 
+## ⚠️ Important Notes
+
+- **Initialization**: Use `DefaultDiscordClient(applicationID: "YOUR_ID")` — not `DiscordClient()`
+- **Async/await**: All methods are `async` — use `Task { await client.update(...) }`
+- **Tick required**: Call `await client.tick()` every 1-2 seconds for IPC to work
+
 ## Features
 
 - **Type-safe Swift API** - No raw Discord SDK types leak through
@@ -48,43 +54,45 @@ See `DiscordSDK/README.md` for detailed instructions.
 import DiscordPresenceKit
 
 class PresenceManager {
-    private let client = DiscordClient()
+    private let client: DiscordClient
     private var timer: Timer?
 
-    func start() {
+    init() throws {
         // Initialize with your Discord Application ID
-        switch client.initialize(applicationID: "1234567890123456789") {
-        case .success:
-            startTickTimer()
-            updatePresence()
-        case .failure(let error):
-            print("Failed to initialize: \(error)")
-        }
+        self.client = try DefaultDiscordClient(applicationID: "1234567890123456789")
+    }
+
+    func start() {
+        startTickTimer()
+        updatePresence()
     }
 
     func updatePresence() {
-        let presence = RichPresence(
-            details: "Playing Awesome Game",
-            state: "Level 42",
-            assets: PresenceAssets(
-                largeImage: "logo",
-                largeText: "Awesome Game"
-            ),
-            timestamps: .start(Date()),
-            type: .playing
-        )
-        client.update(presence)
+        Task {
+            try? await client.update(presence: RichPresence(
+                details: "Playing Awesome Game",
+                state: "Level 42",
+                assets: PresenceAssets(
+                    largeImage: "logo",
+                    largeText: "Awesome Game"
+                ),
+                timestamps: .elapsed(since: Date()),
+                type: .playing
+            ))
+        }
     }
 
     private func startTickTimer() {
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.client.tick()
+            Task { [weak self] in
+                try? await self?.client.tick()
+            }
         }
     }
 
     deinit {
         timer?.invalidate()
-        client.shutdown()
+        Task { await client.shutdown() }
     }
 }
 ```
@@ -94,23 +102,23 @@ class PresenceManager {
 ### Setting Presence
 
 ```swift
-let presence = RichPresence(
-    details: "In a match",
-    state: "Ranked - Solo Queue",
-    assets: PresenceAssets(
-        largeImage: "map_logo",
-        largeText: "Summoner's Rift",
-        smallImage: "champion_icon",
-        smallText: "Yasuo"
-    ),
-    timestamps: .start(Date()),
-    buttons: [
-        PresenceButton(label: "View Profile", url: "https://example.com")
-    ],
-    type: .playing
-)
-
-client.update(presence)
+Task {
+    try? await client.update(presence: RichPresence(
+        details: "In a match",
+        state: "Ranked - Solo Queue",
+        timestamps: .elapsed(since: Date()),
+        assets: PresenceAssets(
+            largeImage: "map_logo",
+            largeText: "Summoner's Rift",
+            smallImage: "champion_icon",
+            smallText: "Yasuo"
+        ),
+        buttons: [
+            PresenceButton(label: "View Profile", url: "https://example.com")
+        ],
+        type: .playing
+    ))
+}
 ```
 
 ### Activity Types
@@ -126,29 +134,32 @@ presence.type = .competing   // "Competing in ..."
 
 ```swift
 // Elapsed time (shows "00:00 elapsed")
-.timestamps(.start(Date()))
+timestamps: .elapsed(since: Date())
 
 // Remaining time (shows "15:00 left")
-.timestamps(.end(Date().addingTimeInterval(900)))
+timestamps: .remaining(until: Date().addingTimeInterval(900))
 ```
 
 ### Clearing Presence
 
 ```swift
-client.clearPresence()
+Task {
+    try? await client.update(presence: .clear)
+}
 ```
 
 ### Error Handling
 
 ```swift
-switch client.initialize(applicationID: appID) {
-case .success:
-    print("Initialized!")
-case .failure(.invalidApplicationID):
+do {
+    let client: DiscordClient = try DefaultDiscordClient(applicationID: "YOUR_APP_ID")
+    try await client.update(presence: presence)
+    try await client.tick()
+} catch DiscordError.invalidApplicationID {
     print("Invalid app ID")
-case .failure(.rateLimited(let seconds)):
+} catch DiscordError.rateLimitExceeded(let seconds) {
     print("Wait \(seconds) seconds")
-case .failure(let error):
+} catch {
     print("Error: \(error)")
 }
 ```
@@ -187,29 +198,41 @@ struct MyApp: App {
     }
 }
 
+@MainActor
 class DiscordPresenceManager: ObservableObject {
-    private let client = DiscordClient()
+    private let client: DiscordClient
     private var timer: Timer?
 
+    init() {
+        // Replace with your actual Discord Application ID
+        guard let client = try? DefaultDiscordClient(applicationID: "YOUR_APP_ID") else {
+            fatalError("Failed to initialize Discord client")
+        }
+        self.client = client
+    }
+
     func start() {
-        _ = client.initialize(applicationID: "YOUR_APP_ID")
         startTickTimer()
         updatePresence("In Menu", state: nil)
     }
 
     func updatePresence(_ details: String, state: String?) {
-        client.update(RichPresence(
-            details: details,
-            state: state,
-            assets: PresenceAssets(largeImage: "app_icon"),
-            timestamps: .start(Date()),
-            type: .playing
-        ))
+        Task {
+            try? await client.update(presence: RichPresence(
+                details: details,
+                state: state,
+                assets: PresenceAssets(largeImage: "app_icon"),
+                timestamps: .elapsed(since: Date()),
+                type: .playing
+            ))
+        }
     }
 
     private func startTickTimer() {
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.client.tick()
+            Task { [weak self] in
+                try? await self?.client.tick()
+            }
         }
     }
 }
