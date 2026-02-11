@@ -7,6 +7,7 @@ A Swift-first Discord Rich Presence library for macOS.
 - **Initialization**: Use `DefaultDiscordClient(applicationID: "YOUR_ID")` — not `DiscordClient()`
 - **Async/await**: All methods are `async` — use `Task { await client.update(...) }`
 - **Tick required**: Call `await client.tick()` every 1-2 seconds for IPC to work
+- **Discord must be running**: The library communicates with the local Discord desktop app over IPC
 
 ## Features
 
@@ -14,6 +15,7 @@ A Swift-first Discord Rich Presence library for macOS.
 - **Automatic rate limiting** - 15-second minimum enforced automatically
 - **Simple lifecycle** - Initialize, update, tick, shutdown
 - **Full Rich Presence support** - Details, state, timestamps, assets, buttons, activity types
+- **Crash-safe** - Handles Discord SDK edge cases gracefully
 
 ## Requirements
 
@@ -24,6 +26,8 @@ A Swift-first Discord Rich Presence library for macOS.
 ## Installation
 
 ### Swift Package Manager
+
+In your `Package.swift`:
 
 ```swift
 dependencies: [
@@ -36,30 +40,32 @@ dependencies: [
 1. File → Add Package Dependencies
 2. Enter: `https://github.com/beb050123/DiscordPresenceKit.git`
 
-## Discord SDK Setup
+## Discord Application Setup
 
-Before using this library, you need to download the Discord SDK:
+Before using this library, set up a Discord application:
 
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
 2. Create a new application
-3. Navigate to **Rich Presence** → **Social SDK**
-4. Download the macOS SDK
-5. Extract it into the `DiscordSDK/` directory
-
-See `DiscordSDK/README.md` for detailed instructions.
+3. Copy your **Application ID** (you'll need this in your code)
+4. Go to **Rich Presence** → **Art Assets**
+5. Upload images (these will be referenced by `largeImage`/`smallImage` keys)
 
 ## Quick Start
 
 ```swift
 import DiscordPresenceKit
 
-class PresenceManager {
+@MainActor
+class PresenceManager: ObservableObject {
     private let client: DiscordClient
     private var timer: Timer?
 
-    init() throws {
-        // Initialize with your Discord Application ID
-        self.client = try DefaultDiscordClient(applicationID: "1234567890123456789")
+    init() {
+        // Replace with your Discord Application ID
+        guard let client = try? DefaultDiscordClient(applicationID: "YOUR_APP_ID") else {
+            fatalError("Failed to initialize Discord client")
+        }
+        self.client = client
     }
 
     func start() {
@@ -97,7 +103,7 @@ class PresenceManager {
 }
 ```
 
-## Usage
+## Usage Examples
 
 ### Setting Presence
 
@@ -124,10 +130,10 @@ Task {
 ### Activity Types
 
 ```swift
-presence.type = .playing      // "Playing ..."
-presence.type = .listening   // "Listening to ..."
-presence.type = .watching    // "Watching ..."
-presence.type = .competing   // "Competing in ..."
+type: .playing      // "Playing ..."
+type: .listening   // "Listening to ..."
+type: .watching    // "Watching ..."
+type: .competing   // "Competing in ..."
 ```
 
 ### Timestamps
@@ -164,20 +170,6 @@ do {
 }
 ```
 
-## Discord Application Setup
-
-1. Create an application at [Discord Developers](https://discord.com/developers/applications)
-2. Copy your **Application ID**
-3. Go to **Rich Presence** → **Art Assets**
-4. Upload images (these will be referenced by `largeImage`/`smallImage` keys)
-
-## Important Notes
-
-- **Discord must be running** - The library communicates with the local Discord client over IPC
-- **Call `tick()` regularly** - Every 1-2 seconds (use a Timer or DispatchQueue)
-- **Rate limiting** - Updates are rate-limited to once per 15 seconds (enforced automatically)
-- **Clean shutdown** - Call `shutdown()` when your app exits
-
 ## SwiftUI Example
 
 ```swift
@@ -204,7 +196,6 @@ class DiscordPresenceManager: ObservableObject {
     private var timer: Timer?
 
     init() {
-        // Replace with your actual Discord Application ID
         guard let client = try? DefaultDiscordClient(applicationID: "YOUR_APP_ID") else {
             fatalError("Failed to initialize Discord client")
         }
@@ -237,6 +228,14 @@ class DiscordPresenceManager: ObservableObject {
     }
 }
 ```
+
+## Verifying It Works
+
+1. Open Discord and go to **User Settings** → **Activity Privacy**
+2. Ensure **"Display current activity as a status message"** is ON
+3. Run your app
+4. Look at your Discord profile (bottom-left corner) — you should see your presence
+5. You can also check in a DM or ask a friend to view your profile
 
 ## License
 
