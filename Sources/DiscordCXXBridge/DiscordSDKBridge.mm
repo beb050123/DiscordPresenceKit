@@ -247,7 +247,8 @@ static const int64_t DISCORD_APP_ID_MIN = 10000000000000000;
 }
 
 - (void)runCallbacks {
-    if (_client != NULL) {
+    // Only run callbacks if the SDK was successfully initialized
+    if (_isInitialized && _client != NULL) {
         Discord_RunCallbacks();
     }
 }
