@@ -27,5 +27,5 @@ DerivedData/
 .build/
 Package.resolved
 
-# Discord SDK - users must download separately from Discord Developer Portal
+# Discord SDK - users must download separately
 DiscordSDK/
