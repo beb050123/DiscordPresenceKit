@@ -249,7 +249,13 @@ static const int64_t DISCORD_APP_ID_MIN = 10000000000000000;
 - (void)runCallbacks {
     // Only run callbacks if the SDK was successfully initialized
     if (_isInitialized && _client != NULL) {
-        Discord_RunCallbacks();
+        @try {
+            Discord_RunCallbacks();
+        } @catch (NSException *exception) {
+            // Discord_RunCallbacks can crash if Discord isn't running
+            // Silently ignore rather than crashing the app
+            NSLog(@"Discord SDK runCallbacks failed: %@", exception.reason);
+        }
     }
 }
 
