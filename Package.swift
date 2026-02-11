@@ -13,25 +13,28 @@ let package = Package(
             targets: ["DiscordPresenceKit"]
         )
     ],
-    dependencies: [],
     targets: [
+        // Discord SDK as a binary target
+        .binaryTarget(
+            name: "DiscordSDK",
+            path: "DiscordSDK/discord_sdk.xcframework"
+        ),
         // C++ Bridge Target
         .target(
             name: "DiscordCXXBridge",
+            dependencies: ["DiscordSDK"],
             path: "Sources/DiscordCXXBridge",
             exclude: [],
             sources: ["DiscordSDKBridge.mm"],
             publicHeadersPath: ".",
             cxxSettings: [
-                .headerSearchPath("../../DiscordSDK/include"),
+                .headerSearchPath("../.build/checkouts/DiscordSDK-xcframework/macos-arm64_x86_64/Headers"),
                 .define("DISCORDCORD_OSX", to: "1"),
                 .unsafeFlags(["-fno-exceptions", "-fno-rtti", "-std=c++17"])
             ],
             linkerSettings: [
                 .unsafeFlags([
-                    "-L../../DiscordSDK/lib/release",
-                    "-ldiscord_partner_sdk",
-                    "-Xlinker", "-rpath", "-Xlinker", "../../DiscordSDK/lib/release",
+                    "-Xlinker", "-rpath", "-Xlinker", "@loader_path/../Frameworks",
                     "-framework", "CoreFoundation",
                     "-framework", "Foundation"
                 ])
@@ -52,16 +55,7 @@ let package = Package(
         .testTarget(
             name: "DiscordPresenceKitTests",
             dependencies: ["DiscordPresenceKit"],
-            path: "Tests/DiscordPresenceKitTests",
-            linkerSettings: [
-                .unsafeFlags([
-                    "-LDiscordSDK/lib/release",
-                    "-ldiscord_partner_sdk",
-                    "-Xlinker", "-rpath", "-Xlinker", "DiscordSDK/lib/release",
-                    "-framework", "CoreFoundation",
-                    "-framework", "Foundation"
-                ])
-            ]
+            path: "Tests/DiscordPresenceKitTests"
         )
     ]
 )
