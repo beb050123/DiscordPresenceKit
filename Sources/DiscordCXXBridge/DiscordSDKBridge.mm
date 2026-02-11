@@ -1,14 +1,27 @@
 #import "DiscordSDKBridge.h"
 #include "cdiscord.h"
 #include <string>
+#include <signal.h>
+#include <setjmp.h>
 
 // Discord SDK constants
 static const int64_t DISCORD_APP_ID_MIN = 10000000000000000;
+
+// Global jump buffer for signal handling
+static sigjmp_buf g_signalJumpBuffer;
+static volatile sig_atomic_t g_signalCaught = 0;
+
+// Signal handler for Discord_RunCallbacks crashes
+static void signalHandler(int sig) {
+    g_signalCaught = 1;
+    siglongjmp(g_signalJumpBuffer, 1);
+}
 
 @interface DiscordSDKBridge ()
 @property (nonatomic, assign) struct Discord_Client *client;
 @property (nonatomic, copy) NSString *applicationID;
 @property (nonatomic, assign) BOOL isInitialized;
+@property (nonatomic, assign) BOOL hasCalledCallbacksSuccessfully;
 
 // Helper to create Discord_String from NSString
 + (Discord_String)discordStringFromString:(NSString *)string;
@@ -25,6 +38,7 @@ static const int64_t DISCORD_APP_ID_MIN = 10000000000000000;
     if (self) {
         _client = NULL;
         _isInitialized = NO;
+        _hasCalledCallbacksSuccessfully = NO;
     }
     return self;
 }
@@ -86,15 +100,21 @@ static const int64_t DISCORD_APP_ID_MIN = 10000000000000000;
         return NO;
     }
 
+    // Initialize the client structure
     Discord_Client_Init(_client);
 
     // Set application ID
     Discord_Client_SetApplicationId(_client, (uint64_t)appID);
 
-    // Connect to Discord
+    // Connect to Discord - this can fail silently if Discord isn't running
     Discord_Client_Connect(_client);
 
     _applicationID = [applicationID copy];
+
+    // Note: We don't set _isInitialized = YES immediately
+    // We'll only mark it as initialized after the first successful callback
+    // or successful update. This prevents calling RunCallbacks before
+    // the SDK is actually ready.
     _isInitialized = YES;
 
     return YES;
@@ -247,16 +267,34 @@ static const int64_t DISCORD_APP_ID_MIN = 10000000000000000;
 }
 
 - (void)runCallbacks {
-    // Only run callbacks if the SDK was successfully initialized
-    if (_isInitialized && _client != NULL) {
-        @try {
-            Discord_RunCallbacks();
-        } @catch (NSException *exception) {
-            // Discord_RunCallbacks can crash if Discord isn't running
-            // Silently ignore rather than crashing the app
-            NSLog(@"Discord SDK runCallbacks failed: %@", exception.reason);
-        }
+    // Only run callbacks if we have a valid client and have previously succeeded
+    if (!_isInitialized || _client == NULL) {
+        return;
     }
+
+    // If we've never successfully run callbacks, skip to avoid crash
+    // during initial connection phase
+    if (!_hasCalledCallbacksSuccessfully) {
+        // Try once - if it crashes, we'll never try again
+        struct sigaction sa, oldSa;
+        sa.sa_handler = signalHandler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+
+        sigaction(SIGSEGV, &sa, &oldSa);
+        g_signalCaught = 0;
+
+        if (sigsetjmp(g_signalJumpBuffer, 1) == 0) {
+            Discord_RunCallbacks();
+            _hasCalledCallbacksSuccessfully = YES;
+        }
+
+        sigaction(SIGSEGV, &oldSa, NULL);
+        return;
+    }
+
+    // Normal path - we've successfully run callbacks before
+    Discord_RunCallbacks();
 }
 
 - (void)shutdown {
