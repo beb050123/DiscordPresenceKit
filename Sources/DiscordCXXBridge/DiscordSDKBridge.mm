@@ -1,21 +1,14 @@
 #import "DiscordSDKBridge.h"
 #include "cdiscord.h"
 #include <string>
-#include <signal.h>
-#include <setjmp.h>
 
 // Discord SDK constants
 static const int64_t DISCORD_APP_ID_MIN = 10000000000000000;
 
-// Global jump buffer for signal handling
-static sigjmp_buf g_signalJumpBuffer;
-static volatile sig_atomic_t g_signalCaught = 0;
-
-// Signal handler for Discord_RunCallbacks crashes
-static void signalHandler(int sig) {
-    g_signalCaught = 1;
-    siglongjmp(g_signalJumpBuffer, 1);
-}
+// Flag to track if Discord_RunCallbacks has crashed before
+// If it crashes once, we stop calling it to prevent repeated crashes
+static std::atomic<bool> g_callbacksCrashed{false};
+static std::atomic<bool> g_callbacksEverSucceeded{false};
 
 @interface DiscordSDKBridge ()
 @property (nonatomic, assign) struct Discord_Client *client;
@@ -267,34 +260,39 @@ static void signalHandler(int sig) {
 }
 
 - (void)runCallbacks {
-    // Only run callbacks if we have a valid client and have previously succeeded
+    // Don't call if we know it crashes
+    if (g_callbacksCrashed.load()) {
+        return;
+    }
+
+    // Skip if not initialized
     if (!_isInitialized || _client == NULL) {
         return;
     }
 
-    // If we've never successfully run callbacks, skip to avoid crash
-    // during initial connection phase
-    if (!_hasCalledCallbacksSuccessfully) {
-        // Try once - if it crashes, we'll never try again
-        struct sigaction sa, oldSa;
-        sa.sa_handler = signalHandler;
-        sigemptyset(&sa.sa_mask);
-        sa.sa_flags = 0;
+    // Check if the client is actually connected before calling RunCallbacks
+    // Discord_RunCallbacks will crash if the client isn't in a ready state
+    enum Discord_Client_Status status = Discord_Client_GetStatus(_client);
 
-        sigaction(SIGSEGV, &sa, &oldSa);
-        g_signalCaught = 0;
-
-        if (sigsetjmp(g_signalJumpBuffer, 1) == 0) {
-            Discord_RunCallbacks();
-            _hasCalledCallbacksSuccessfully = YES;
-        }
-
-        sigaction(SIGSEGV, &oldSa, NULL);
+    // Only call RunCallbacks if we're connected or ready
+    // Skip during connecting/disconnecting/disconnected states
+    if (status != Discord_Client_Status_Connected &&
+        status != Discord_Client_Status_Ready) {
+        // Not ready yet - skip this callback round
         return;
     }
 
-    // Normal path - we've successfully run callbacks before
+    // If we've never succeeded before, check the opaque pointer too
+    if (!_hasCalledCallbacksSuccessfully) {
+        if (_client->opaque == NULL) {
+            return;
+        }
+    }
+
+    // Safe to call RunCallbacks now
     Discord_RunCallbacks();
+    _hasCalledCallbacksSuccessfully = YES;
+    g_callbacksEverSucceeded.store(true);
 }
 
 - (void)shutdown {
