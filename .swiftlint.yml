@@ -1,0 +1,16 @@
+disabled_rules:
+  - trailing_whitespace
+  - line_length
+  - todo
+opt_in_rules:
+  - sorted_imports
+  - closure_spacing
+  - explicit_init
+  - first_where
+  - sorted_first_last
+included:
+  - Sources
+  - Tests
+excluded:
+  - .build
+  - DiscordSDK

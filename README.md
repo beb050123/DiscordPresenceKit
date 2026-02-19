@@ -8,6 +8,7 @@ A Swift-first Discord Rich Presence library for macOS.
 - **Async/await**: All methods are `async` — use `Task { await client.update(...) }`
 - **Tick required**: Call `await client.tick()` every 1-2 seconds for IPC to work
 - **Discord must be running**: The library communicates with the local Discord desktop app over IPC
+- **Production signing**: You must sign your app with your Apple Developer ID to distribute it
 
 ## Features
 
@@ -22,6 +23,7 @@ A Swift-first Discord Rich Presence library for macOS.
 - macOS 12.0+
 - Xcode 15.0+ or Swift 5.9+
 - Discord desktop app running locally
+- **Apple Developer account** required for distribution (codesigning)
 
 ## Installation
 
@@ -49,6 +51,13 @@ Before using this library, set up a Discord application:
 3. Copy your **Application ID** (you'll need this in your code)
 4. Go to **Rich Presence** → **Art Assets**
 5. Upload images (these will be referenced by `largeImage`/`smallImage` keys)
+
+### Verifying It Works
+
+1. Open Discord and go to **User Settings** → **Activity Privacy**
+2. Ensure **"Display current activity as a status message"** is ON
+3. Run your app
+4. Look at your Discord profile (bottom-left corner) — you should see your presence
 
 ## Quick Start
 
@@ -170,72 +179,39 @@ do {
 }
 ```
 
-## SwiftUI Example
+## Troubleshooting
 
-```swift
-import SwiftUI
-import DiscordPresenceKit
+### Code Signing Issues During Archive
 
-@main
-struct MyApp: App {
-    @StateObject private var presence = DiscordPresenceManager()
+The bundled Discord SDK dylib is now signed with an ad-hoc signature, allowing it to be properly re-signed during your app's archive process. If you still encounter code signing hangs when building with hardened runtime (required for notarized macOS app distribution), add a Run Script build phase:
 
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-        }
-        .onAppear {
-            presence.start()
-        }
-    }
-}
+1. In Xcode, select your target → Build Phases → + → New Run Script Phase
+2. Position it **before** the "Embed Frameworks" phase
+3. Add this script:
 
-@MainActor
-class DiscordPresenceManager: ObservableObject {
-    private let client: DiscordClient
-    private var timer: Timer?
+```bash
+DISCORD_DYLIB="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Frameworks/libdiscord_partner_sdk.dylib"
 
-    init() {
-        guard let client = try? DefaultDiscordClient(applicationID: "YOUR_APP_ID") else {
-            fatalError("Failed to initialize Discord client")
-        }
-        self.client = client
-    }
-
-    func start() {
-        startTickTimer()
-        updatePresence("In Menu", state: nil)
-    }
-
-    func updatePresence(_ details: String, state: String?) {
-        Task {
-            try? await client.update(presence: RichPresence(
-                details: details,
-                state: state,
-                assets: PresenceAssets(largeImage: "app_icon"),
-                timestamps: .elapsed(since: Date()),
-                type: .playing
-            ))
-        }
-    }
-
-    private func startTickTimer() {
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { [weak self] in
-                try? await self?.client.tick()
-            }
-        }
-    }
-}
+if [ -f "$DISCORD_DYLIB" ]; then
+    codesign --remove-signature "$DISCORD_DYLIB" 2>/dev/null || true
+    codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY}" \
+        --options runtime \
+        --timestamp \
+        "$DISCORD_DYLIB"
+fi
 ```
 
-## Verifying It Works
+### Discord Not Showing Presence
 
-1. Open Discord and go to **User Settings** → **Activity Privacy**
-2. Ensure **"Display current activity as a status message"** is ON
-3. Run your app
-4. Look at your Discord profile (bottom-left corner) — you should see your presence
-5. You can also check in a DM or ask a friend to view your profile
+1. Ensure Discord desktop app is running (not just the web version)
+2. Check **User Settings** → **Activity Privacy** → **"Display current activity as a status message"** is enabled
+3. Verify your Application ID is correct
+4. Make sure you're calling `tick()` regularly (every 1-2 seconds)
+
+### Build Errors
+
+- **"No such module 'DiscordPresenceKit'"**: Clean build folder (Cmd+Shift+K) and rebuild
+- **Linker errors**: Ensure you're building for macOS 12.0+
 
 ## License
 
