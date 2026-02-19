@@ -266,8 +266,19 @@ static dispatch_queue_t g_discordQueue = nil;
             Discord_Activity_SetName(&activity, nameDs);
         }
 
-        // Update presence
-        Discord_Client_UpdateRichPresence(_client, &activity, NULL, NULL, NULL);
+        // Update presence with a valid callback (required when using free-threaded mode)
+        Discord_Client_UpdateRichPresence(_client, &activity, 
+            [](Discord_ClientResult* result, void* userData) {
+                // Callback for presence update - we don't need to do anything
+                // but the SDK requires a valid callback in free-threaded mode
+                if (result && !Discord_ClientResult_Successful(result)) {
+                    Discord_String errorStr;
+                    Discord_ClientResult_Error(result, &errorStr);
+                    NSLog(@"DiscordSDK: Presence update failed");
+                    Discord_ClientResult_Drop(result);
+                }
+            }, 
+            NULL, NULL);
 
         Discord_Activity_Drop(&activity);
 
