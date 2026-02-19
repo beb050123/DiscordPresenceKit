@@ -27,7 +27,8 @@ final class DiscordClientTests: XCTestCase {
         let client = try DiscordClientImpl(
             applicationID: "test-app-123",
             sdkClient: mockSDK,
-            rateLimiter: mockRateLimiter
+            rateLimiter: mockRateLimiter,
+            heartbeatInterval: 0.1 // Fast for testing
         )
 
         XCTAssertTrue(mockSDK.initializeWasCalled)
@@ -70,7 +71,8 @@ final class DiscordClientTests: XCTestCase {
         let client = try DiscordClientImpl(
             applicationID: "test-app",
             sdkClient: mockSDK,
-            rateLimiter: mockRateLimiter
+            rateLimiter: mockRateLimiter,
+            heartbeatInterval: 0.1
         )
 
         let presence = RichPresence(
@@ -91,7 +93,8 @@ final class DiscordClientTests: XCTestCase {
         let client = try DiscordClientImpl(
             applicationID: "test-app",
             sdkClient: mockSDK,
-            rateLimiter: mockRateLimiter
+            rateLimiter: mockRateLimiter,
+            heartbeatInterval: 0.1
         )
 
         let startDate = Date()
@@ -128,11 +131,12 @@ final class DiscordClientTests: XCTestCase {
         XCTAssertEqual(activity?.name, "My App")
     }
 
-    func testUpdatePresenceRateLimited() async throws {
+    func testUpdatePresenceRateLimitedQueuesUpdate() async throws {
         let client = try DiscordClientImpl(
             applicationID: "test-app",
             sdkClient: mockSDK,
-            rateLimiter: mockRateLimiter
+            rateLimiter: mockRateLimiter,
+            heartbeatInterval: 0.1
         )
 
         let presence = RichPresence(details: "Test")
@@ -141,30 +145,26 @@ final class DiscordClientTests: XCTestCase {
         try await client.update(presence: presence)
         XCTAssertEqual(mockSDK.updatePresenceCallCount, 1)
 
-        // Immediate second update should be rate limited
-        mockTime.advance(by: 0) // No time has passed
-
-        do {
-            try await client.update(presence: presence)
-            XCTFail("Should have thrown rate limit error")
-        } catch let error as DiscordError {
-            switch error {
-            case .rateLimitExceeded(let retryAfter):
-                XCTAssertTrue(retryAfter > 0)
-                XCTAssertTrue(retryAfter <= 15.0)
-                // SDK should not be called again
-                XCTAssertEqual(mockSDK.updatePresenceCallCount, 1, "SDK should not be called when rate limited")
-            default:
-                XCTFail("Expected rateLimitExceeded error, got: \(error)")
-            }
-        }
+        // Immediate second update should be queued (no error thrown)
+        let presence2 = RichPresence(details: "Test 2")
+        try await client.update(presence: presence2)
+        
+        // SDK should not be called again immediately
+        XCTAssertEqual(mockSDK.updatePresenceCallCount, 1, "SDK should not be called when rate limited")
+        
+        // Wait for heartbeat to process the queued update after rate limit expires
+        mockTime.advance(by: 15.0) // Advance past rate limit
+        try await Task.sleep(nanoseconds: 200_000_000) // Wait for heartbeat cycle
+        
+        XCTAssertEqual(mockSDK.updatePresenceCallCount, 2, "Queued update should be sent after rate limit")
     }
 
     func testUpdatePresenceAfterShutdown() async throws {
         let client = try DiscordClientImpl(
             applicationID: "test-app",
             sdkClient: mockSDK,
-            rateLimiter: mockRateLimiter
+            rateLimiter: mockRateLimiter,
+            heartbeatInterval: 0.1
         )
 
         await client.shutdown()
@@ -184,78 +184,22 @@ final class DiscordClientTests: XCTestCase {
         }
     }
 
-    // MARK: - Tick
+    // MARK: - Automatic Heartbeat
 
-    func testTickSuccess() async throws {
+    func testHeartbeatCallsTickAutomatically() async throws {
         let client = try DiscordClientImpl(
             applicationID: "test-app",
             sdkClient: mockSDK,
-            rateLimiter: mockRateLimiter
+            rateLimiter: mockRateLimiter,
+            heartbeatInterval: 0.1 // Fast for testing
         )
 
-        try await client.tick()
+        // Wait for a few heartbeat cycles
+        try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
 
+        // Tick should have been called multiple times by heartbeat
         XCTAssertTrue(mockSDK.tickWasCalled)
-        XCTAssertEqual(mockSDK.tickCallCount, 1)
-    }
-
-    func testMultipleTicks() async throws {
-        let client = try DiscordClientImpl(
-            applicationID: "test-app",
-            sdkClient: mockSDK,
-            rateLimiter: mockRateLimiter
-        )
-
-        for _ in 0..<5 {
-            try await client.tick()
-        }
-
-        XCTAssertEqual(mockSDK.tickCallCount, 5)
-    }
-
-    func testTickAfterShutdown() async throws {
-        let client = try DiscordClientImpl(
-            applicationID: "test-app",
-            sdkClient: mockSDK,
-            rateLimiter: mockRateLimiter
-        )
-
-        await client.shutdown()
-
-        do {
-            try await client.tick()
-            XCTFail("Should have thrown error after shutdown")
-        } catch let error as DiscordError {
-            switch error {
-            case .updateFailed(let message):
-                XCTAssertTrue(message?.contains("shut down") == true || message?.contains("shutdown") == true)
-            default:
-                XCTFail("Expected updateFailed error, got: \(error)")
-            }
-        }
-    }
-
-    func testTickWithSDKFailure() async throws {
-        mockSDK.failTick(true, error: .tickFailed(message: "Callback error"))
-
-        let client = try DiscordClientImpl(
-            applicationID: "test-app",
-            sdkClient: mockSDK,
-            rateLimiter: mockRateLimiter
-        )
-
-        do {
-            try await client.tick()
-            XCTFail("Should have thrown tick error")
-        } catch let error as DiscordError {
-            switch error {
-            case .tickFailed:
-                // The error contains the localized description from SDKError
-                XCTAssertTrue(true)
-            default:
-                XCTFail("Expected tickFailed error, got: \(error)")
-            }
-        }
+        XCTAssertGreaterThan(mockSDK.tickCallCount, 2)
     }
 
     // MARK: - Shutdown
@@ -264,7 +208,8 @@ final class DiscordClientTests: XCTestCase {
         let client = try DiscordClientImpl(
             applicationID: "test-app",
             sdkClient: mockSDK,
-            rateLimiter: mockRateLimiter
+            rateLimiter: mockRateLimiter,
+            heartbeatInterval: 0.1
         )
 
         await client.shutdown()
@@ -283,7 +228,8 @@ final class DiscordClientTests: XCTestCase {
         let client = try DiscordClientImpl(
             applicationID: "test-app",
             sdkClient: freshMockSDK,
-            rateLimiter: freshRateLimiter
+            rateLimiter: freshRateLimiter,
+            heartbeatInterval: 0.1
         )
 
         await client.shutdown()
@@ -300,7 +246,8 @@ final class DiscordClientTests: XCTestCase {
         let client = try DiscordClientImpl(
             applicationID: "test-app",
             sdkClient: mockSDK,
-            rateLimiter: mockRateLimiter
+            rateLimiter: mockRateLimiter,
+            heartbeatInterval: 0.1
         )
 
         XCTAssertTrue(client.isInitialized)
@@ -309,10 +256,8 @@ final class DiscordClientTests: XCTestCase {
         let presence = RichPresence(details: "Playing")
         try await client.update(presence: presence)
 
-        // Tick multiple times
-        for _ in 0..<3 {
-            try await client.tick()
-        }
+        // Wait for some heartbeat cycles
+        try await Task.sleep(nanoseconds: 300_000_000) // 0.3 seconds
 
         // Shutdown
         await client.shutdown()
@@ -320,7 +265,7 @@ final class DiscordClientTests: XCTestCase {
         XCTAssertTrue(client.isShutdown)
         XCTAssertEqual(mockSDK.initializeCallCount, 1)
         XCTAssertEqual(mockSDK.updatePresenceCallCount, 1)
-        XCTAssertEqual(mockSDK.tickCallCount, 3)
+        XCTAssertGreaterThan(mockSDK.tickCallCount, 1, "Heartbeat should have called tick multiple times")
         XCTAssertEqual(mockSDK.shutdownCallCount, 1)
     }
 }

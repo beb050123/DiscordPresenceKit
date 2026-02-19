@@ -2,19 +2,12 @@
 
 A Swift-first Discord Rich Presence library for macOS.
 
-## ⚠️ Important Notes
-
-- **Initialization**: Use `DefaultDiscordClient(applicationID: "YOUR_ID")` — not `DiscordClient()`
-- **Async/await**: All methods are `async` — use `Task { await client.update(...) }`
-- **Tick required**: Call `await client.tick()` every 1-2 seconds for IPC to work
-- **Discord must be running**: The library communicates with the local Discord desktop app over IPC
-- **Production signing**: You must sign your app with your Apple Developer ID to distribute it
-
 ## Features
 
+- **Fire-and-forget API** - Just call `update()` - no manual tick management
+- **Automatic heartbeat** - SDK callbacks handled internally on a background thread
+- **Automatic rate limiting** - 15-second minimum between updates, queued automatically
 - **Type-safe Swift API** - No raw Discord SDK types leak through
-- **Automatic rate limiting** - 15-second minimum enforced automatically
-- **Simple lifecycle** - Initialize, update, tick, shutdown
 - **Full Rich Presence support** - Details, state, timestamps, assets, buttons, activity types
 - **Crash-safe** - Handles Discord SDK edge cases gracefully
 
@@ -67,7 +60,6 @@ import DiscordPresenceKit
 @MainActor
 class PresenceManager: ObservableObject {
     private let client: DiscordClient
-    private var timer: Timer?
 
     init() {
         // Replace with your Discord Application ID
@@ -75,11 +67,6 @@ class PresenceManager: ObservableObject {
             fatalError("Failed to initialize Discord client")
         }
         self.client = client
-    }
-
-    func start() {
-        startTickTimer()
-        updatePresence()
     }
 
     func updatePresence() {
@@ -97,20 +84,15 @@ class PresenceManager: ObservableObject {
         }
     }
 
-    private func startTickTimer() {
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { [weak self] in
-                try? await self?.client.tick()
-            }
-        }
-    }
-
     deinit {
-        timer?.invalidate()
         Task { await client.shutdown() }
     }
 }
 ```
+
+That's it! The library handles:
+- **Heartbeat/tick** - Called automatically on a background thread
+- **Rate limiting** - Updates faster than 15 seconds are queued and sent when allowed
 
 ## Usage Examples
 
@@ -169,11 +151,10 @@ Task {
 do {
     let client: DiscordClient = try DefaultDiscordClient(applicationID: "YOUR_APP_ID")
     try await client.update(presence: presence)
-    try await client.tick()
 } catch DiscordError.invalidApplicationID {
     print("Invalid app ID")
-} catch DiscordError.rateLimitExceeded(let seconds) {
-    print("Wait \(seconds) seconds")
+} catch DiscordError.clientUnavailable {
+    print("Discord is not running")
 } catch {
     print("Error: \(error)")
 }
@@ -206,7 +187,6 @@ fi
 1. Ensure Discord desktop app is running (not just the web version)
 2. Check **User Settings** → **Activity Privacy** → **"Display current activity as a status message"** is enabled
 3. Verify your Application ID is correct
-4. Make sure you're calling `tick()` regularly (every 1-2 seconds)
 
 ### Build Errors
 

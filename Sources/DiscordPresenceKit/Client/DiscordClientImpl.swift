@@ -5,7 +5,8 @@ import Foundation
 /// The concrete implementation of ``DiscordClient`` using the Discord Social SDK.
 ///
 /// This implementation manages the underlying Discord SDK lifecycle,
-/// enforces rate limiting, and provides a Swift-first public API.
+/// handles automatic heartbeat/tick, and provides fire-and-forget presence updates
+/// with automatic rate limiting.
 public final class DiscordClientImpl: DiscordClient {
     // MARK: - Properties
 
@@ -15,7 +16,14 @@ public final class DiscordClientImpl: DiscordClient {
     private let sdkClient: InternalSDKClient
     private let rateLimiter: PresenceRateLimiter
     private let stateLock: NSLock
-
+    
+    // Heartbeat management
+    private var heartbeatTask: Task<Void, Never>?
+    private let heartbeatInterval: TimeInterval
+    
+    // Pending presence update (queued when rate limited)
+    private var pendingPresence: RichPresence?
+    
     // State protected by stateLock
     private var _isInitialized = false
     private var _isShutdown = false
@@ -48,11 +56,13 @@ public final class DiscordClientImpl: DiscordClient {
         self.sdkClient = DiscordSDKClient()
         self.rateLimiter = PresenceRateLimiter()
         self.stateLock = NSLock()
+        self.heartbeatInterval = 1.5 // Discord recommends 1-2 seconds
 
         // Initialize the underlying SDK
         switch sdkClient.initialize(applicationID: applicationID) {
         case .success:
             stateLock.withCriticalScope { _isInitialized = true }
+            startHeartbeat()
         case .failure(let error):
             switch error {
             case .invalidApplicationID:
@@ -71,7 +81,8 @@ public final class DiscordClientImpl: DiscordClient {
     init(
         applicationID: String,
         sdkClient: InternalSDKClient,
-        rateLimiter: PresenceRateLimiter
+        rateLimiter: PresenceRateLimiter,
+        heartbeatInterval: TimeInterval = 1.5
     ) throws {
         guard !applicationID.isEmpty else {
             throw DiscordError.invalidApplicationID
@@ -81,11 +92,13 @@ public final class DiscordClientImpl: DiscordClient {
         self.sdkClient = sdkClient
         self.rateLimiter = rateLimiter
         self.stateLock = NSLock()
+        self.heartbeatInterval = heartbeatInterval
 
         // Initialize the underlying SDK
         switch sdkClient.initialize(applicationID: applicationID) {
         case .success:
             stateLock.withCriticalScope { _isInitialized = true }
+            startHeartbeat()
         case .failure(let error):
             switch error {
             case .invalidApplicationID:
@@ -104,16 +117,83 @@ public final class DiscordClientImpl: DiscordClient {
 
     public func update(presence: RichPresence) async throws {
         try checkNotShutdown()
+        
+        // Store the pending presence
+        stateLock.withCriticalScope {
+            pendingPresence = presence
+        }
+        
+        // Try to send immediately if not rate limited
+        try await sendPendingPresence()
+    }
 
-        // Check rate limit first
-        let result = rateLimiter.recordUpdate()
-        if case .failure(let error) = result {
-            throw DiscordError.rateLimitExceeded(retryAfter: error.secondsUntilNextUpdate)
+    public func shutdown() async {
+        var shouldCallShutdown = false
+        stateLock.withCriticalScope {
+            guard !_isShutdown else { return }
+            _isShutdown = true
+            _isInitialized = false
+            shouldCallShutdown = true
         }
 
-        // Convert to internal activity and update
-        let activity = presence.toInternalActivity()
+        if shouldCallShutdown {
+            // Stop heartbeat
+            heartbeatTask?.cancel()
+            heartbeatTask = nil
+            
+            // Clear pending
+            stateLock.withCriticalScope {
+                pendingPresence = nil
+            }
+            
+            sdkClient.shutdown()
+        }
+    }
 
+    // MARK: - Private Methods
+
+    private func startHeartbeat() {
+        heartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self = self, !self.isShutdown else { break }
+                
+                // Run SDK callbacks
+                _ = self.sdkClient.tick()
+                
+                // Check if we have a pending presence to send
+                if self.rateLimiter.canUpdate() {
+                    if let pending = self.stateLock.withCriticalScope({ self.pendingPresence }) {
+                        try? self.performUpdate(presence: pending)
+                    }
+                }
+                
+                // Sleep for heartbeat interval (nanoseconds API for macOS 12 compatibility)
+                try? await Task.sleep(nanoseconds: UInt64(self.heartbeatInterval * 1_000_000_000))
+            }
+        }
+    }
+    
+    private func sendPendingPresence() async throws {
+        guard let presence = stateLock.withCriticalScope({ pendingPresence }) else { return }
+        
+        // Check rate limit
+        if !rateLimiter.canUpdate() {
+            // Update is queued - it will be sent by heartbeat when rate limit expires
+            return
+        }
+        
+        try performUpdate(presence: presence)
+    }
+    
+    private func performUpdate(presence: RichPresence) throws {
+        let result = rateLimiter.recordUpdate()
+        guard case .success = result else {
+            // Shouldn't happen since we checked canUpdate(), but handle gracefully
+            return
+        }
+        
+        let activity = presence.toInternalActivity()
+        
         switch sdkClient.updatePresence(activity) {
         case .success:
             break
@@ -130,33 +210,6 @@ public final class DiscordClientImpl: DiscordClient {
             }
         }
     }
-
-    public func tick() async throws {
-        try checkNotShutdown()
-
-        switch sdkClient.tick() {
-        case .success:
-            break
-        case .failure(let error):
-            throw DiscordError.tickFailed(underlying: error.localizedDescription)
-        }
-    }
-
-    public func shutdown() async {
-        var shouldCallShutdown = false
-        stateLock.withCriticalScope {
-            guard !_isShutdown else { return }
-            _isShutdown = true
-            _isInitialized = false
-            shouldCallShutdown = true
-        }
-
-        if shouldCallShutdown {
-            sdkClient.shutdown()
-        }
-    }
-
-    // MARK: - Private Methods
 
     private func checkNotShutdown() throws {
         guard !isShutdown else {
