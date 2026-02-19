@@ -1,14 +1,16 @@
 #import "DiscordSDKBridge.h"
 #include "cdiscord.h"
 #include <string>
+#include <dispatch/dispatch.h>
 
 // Discord SDK constants
 static const int64_t DISCORD_APP_ID_MIN = 10000000000000000;
 
-// Flag to track if Discord_RunCallbacks has crashed before
-// If it crashes once, we stop calling it to prevent repeated crashes
+// Global state for SDK initialization (SDK uses global callbacks)
+static std::atomic<bool> g_sdkInitialized{false};
 static std::atomic<bool> g_callbacksCrashed{false};
-static std::atomic<bool> g_callbacksEverSucceeded{false};
+static std::atomic<bool> g_clientReady{false};
+static dispatch_queue_t g_discordQueue = nil;
 
 @interface DiscordSDKBridge ()
 @property (nonatomic, assign) struct Discord_Client *client;
@@ -32,6 +34,12 @@ static std::atomic<bool> g_callbacksEverSucceeded{false};
         _client = NULL;
         _isInitialized = NO;
         _hasCalledCallbacksSuccessfully = NO;
+        
+        // Initialize the global dispatch queue once
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            g_discordQueue = dispatch_queue_create("com.discordpresencekit.callbacks", DISPATCH_QUEUE_SERIAL);
+        });
     }
     return self;
 }
@@ -82,6 +90,16 @@ static std::atomic<bool> g_callbacksEverSucceeded{false};
         return NO;
     }
 
+    // Initialize SDK globals once
+    if (!g_sdkInitialized.exchange(true)) {
+        // Set free-threaded mode for safe callback handling
+        Discord_SetFreeThreaded();
+        Discord_ResetCallbacks();
+    }
+
+    // Reset ready state for this client
+    g_clientReady.store(false);
+
     // Create Discord client
     _client = (struct Discord_Client *)malloc(sizeof(Discord_Client));
     if (!_client) {
@@ -96,6 +114,17 @@ static std::atomic<bool> g_callbacksEverSucceeded{false};
     // Initialize the client structure
     Discord_Client_Init(_client);
 
+    // Set up status changed callback to track when client is ready
+    Discord_Client_SetStatusChangedCallback(_client, 
+        [](Discord_Client_Status status, Discord_Client_Error error, int32_t errorDetail, void* userData) {
+            if (status == Discord_Client_Status_Ready) {
+                g_clientReady.store(true);
+            } else if (status == Discord_Client_Status_Disconnected) {
+                g_clientReady.store(false);
+            }
+        }, 
+        NULL, NULL);
+
     // Set application ID
     Discord_Client_SetApplicationId(_client, (uint64_t)appID);
 
@@ -103,11 +132,6 @@ static std::atomic<bool> g_callbacksEverSucceeded{false};
     Discord_Client_Connect(_client);
 
     _applicationID = [applicationID copy];
-
-    // Note: We don't set _isInitialized = YES immediately
-    // We'll only mark it as initialized after the first successful callback
-    // or successful update. This prevents calling RunCallbacks before
-    // the SDK is actually ready.
     _isInitialized = YES;
 
     return YES;
@@ -270,38 +294,42 @@ static std::atomic<bool> g_callbacksEverSucceeded{false};
         return;
     }
 
-    // Check if the client is actually connected before calling RunCallbacks
-    // Discord_RunCallbacks will crash if the client isn't in a ready state
-    enum Discord_Client_Status status = Discord_Client_GetStatus(_client);
-
-    // Only call RunCallbacks if we're connected or ready
-    // Skip during connecting/disconnecting/disconnected states
-    if (status != Discord_Client_Status_Connected &&
-        status != Discord_Client_Status_Ready) {
-        // Not ready yet - skip this callback round
-        return;
-    }
-
-    // If we've never succeeded before, check the opaque pointer too
-    if (!_hasCalledCallbacksSuccessfully) {
-        if (_client->opaque == NULL) {
+    // Check if client is ready before calling RunCallbacks
+    // The SDK can crash if we call RunCallbacks before it's fully initialized
+    if (!g_clientReady.load() && !_hasCalledCallbacksSuccessfully) {
+        // Client not ready yet - check status
+        enum Discord_Client_Status status = Discord_Client_GetStatus(_client);
+        
+        // Only proceed if connected or ready
+        if (status != Discord_Client_Status_Connected &&
+            status != Discord_Client_Status_Ready) {
             return;
         }
     }
 
-    // Safe to call RunCallbacks now
-    Discord_RunCallbacks();
-    _hasCalledCallbacksSuccessfully = YES;
-    g_callbacksEverSucceeded.store(true);
+    // Dispatch to serial queue for thread safety
+    dispatch_sync(g_discordQueue, ^{
+        @try {
+            Discord_RunCallbacks();
+            _hasCalledCallbacksSuccessfully = YES;
+        } @catch (NSException *exception) {
+            // Mark as crashed to prevent future calls
+            g_callbacksCrashed.store(true);
+            NSLog(@"DiscordSDK: RunCallbacks crashed: %@", exception.reason);
+        }
+    });
 }
 
 - (void)shutdown {
     if (_client != NULL) {
+        Discord_Client_Disconnect(_client);
         Discord_Client_Drop(_client);
         free(_client);
         _client = NULL;
     }
     _isInitialized = NO;
+    _hasCalledCallbacksSuccessfully = NO;
+    g_clientReady.store(false);
 }
 
 @end
